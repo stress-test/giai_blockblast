@@ -1,67 +1,101 @@
 package com.example.bbsolver
 
-import android.graphics.Bitmap
-import android.graphics.Color
 import android.content.Context
 
 object Cfg {
-    // Tất cả là tỉ lệ so với màn hình. bx,bs theo chiều rộng; by,ty,th theo chiều cao.
-    val DEF = linkedMapOf("bx" to 0.04f, "by" to 0.28f, "bs" to 0.92f, "ty" to 0.74f, "th" to 0.20f, "ts" to 0.60f)
-    val LABEL = mapOf(
-        "bx" to "Bảng: lề trái / rộng màn hình", "by" to "Bảng: mép trên / cao màn hình",
-        "bs" to "Bảng: cạnh bảng / rộng màn hình", "ty" to "Khay mảnh: mép trên / cao màn hình",
-        "th" to "Khay mảnh: chiều cao / cao màn hình", "ts" to "Ô trong khay / ô trên bảng (kích thước)")
-    fun load(c: Context): Map<String, Float> {
-        val p = c.getSharedPreferences("cfg", 0)
-        return DEF.mapValues { p.getFloat(it.key, it.value) }
+    // bx,bs theo chiều rộng màn hình; by,ty,th theo chiều cao. ts: ô khay/ô bảng. vt: ngưỡng dự phòng. bias: độ nhạy.
+    val DEF = linkedMapOf("bx" to 0.04f, "by" to 0.28f, "bs" to 0.92f, "ty" to 0.74f, "th" to 0.20f,
+        "ts" to 0.60f, "vt" to 0.50f, "bias" to 0.0f)
+    fun load(c: Context): Map<String, Float> { val p = c.getSharedPreferences("cfg", 0); return DEF.mapValues { p.getFloat(it.key, it.value) } }
+    fun calibrated(c: Context) = c.getSharedPreferences("cfg", 0).getBoolean("calib", false)
+    fun reset(c: Context) = c.getSharedPreferences("cfg", 0).edit().clear().apply()
+}
+
+/** Ảnh màn hình dạng byte thô RGBA (không tạo Bitmap, không getPixel → nhanh, ít rác bộ nhớ). */
+class Frame(val buf: ByteArray, val stride: Int, val W: Int, val H: Int) {
+    fun rgb(x: Int, y: Int): Int {
+        val i = y.coerceIn(0, H - 1) * stride + x.coerceIn(0, W - 1) * 4
+        return ((buf[i].toInt() and 255) shl 16) or ((buf[i + 1].toInt() and 255) shl 8) or (buf[i + 2].toInt() and 255)
     }
 }
 
+class Scan(val board: IntArray, val pieces: List<List<IntArray>>) {
+    fun key() = board.joinToString(",") + "|" + pieces.joinToString("/") { p -> p.joinToString(";") { "${it[0]}${it[1]}" } }
+}
+
 object Detector {
-    private fun bright(p: Int): Boolean {
-        val hsv = FloatArray(3); Color.colorToHSV(p, hsv)
-        return hsv[2] > 0.6f && hsv[1] > 0.25f   // ô có khối: sáng + bão hòa; ô trống: tối
+    private fun score(c: Int): Float {
+        val r = (c shr 16) and 255; val g = (c shr 8) and 255; val b = c and 255
+        val mx = maxOf(r, g, b); val mn = minOf(r, g, b)
+        val s = if (mx == 0) 0f else (mx - mn).toFloat() / mx
+        return mx / 255f * (0.3f + s)
     }
-    private fun px(b: Bitmap, x: Int, y: Int, W: Int, H: Int) = b.getPixel(x.coerceIn(0, W - 1), y.coerceIn(0, H - 1))
-
-    fun board(b: Bitmap, W: Int, H: Int, c: Map<String, Float>): IntArray {
-        val cell = c["bs"]!! * W / 8; val x0 = c["bx"]!! * W; val y0 = c["by"]!! * H
-        return IntArray(8) { r ->
-            var m = 0
-            for (k in 0 until 8) if (bright(px(b, (x0 + (k + .5f) * cell).toInt(), (y0 + (r + .5f) * cell).toInt(), W, H))) m = m or (1 shl k)
-            m
+    private fun avgScore(f: Frame, cx: Float, cy: Float, d: Float): Float {
+        var t = 0f
+        for (dy in -1..1) for (dx in -1..1) t += score(f.rgb((cx + dx * d).toInt(), (cy + dy * d).toInt()))
+        return t / 9f
+    }
+    /** Tự tìm ngưỡng tách ô trống / ô có khối (Otsu) → chạy tốt với mọi theme. */
+    private fun otsu(v: FloatArray, fallback: Float): Float {
+        val s = v.sortedArray()
+        if (s.last() - s.first() < 0.25f) return fallback
+        val n = s.size; val tot = s.sum(); var acc = 0f; var bestV = -1f; var bestT = fallback
+        for (i in 1 until n) {
+            acc += s[i - 1]
+            val m1 = acc / i; val m2 = (tot - acc) / (n - i)
+            val vr = i.toFloat() * (n - i) * (m1 - m2) * (m1 - m2)
+            if (vr > bestV) { bestV = vr; bestT = (s[i - 1] + s[i]) / 2 }
         }
+        return bestT
     }
 
-    fun pieces(b: Bitmap, W: Int, H: Int, c: Map<String, Float>): List<List<IntArray>> {
-        val ideal = c["bs"]!! * W / 8 * c["ts"]!!
-        val ty = (c["ty"]!! * H).toInt(); val th = (c["th"]!! * H).toInt()
+    fun board(f: Frame, c: Map<String, Float>): IntArray {
+        val cell = c["bs"]!! * f.W / 8; val x0 = c["bx"]!! * f.W; val y0 = c["by"]!! * f.H; val d = cell * 0.18f
+        val sc = FloatArray(64) { avgScore(f, x0 + (it % 8 + .5f) * cell, y0 + (it / 8 + .5f) * cell, d) }
+        val thr = otsu(sc, c["vt"]!!) + c["bias"]!!
+        return IntArray(8) { r -> var m = 0; for (k in 0 until 8) if (sc[r * 8 + k] > thr) m = m or (1 shl k); m }
+    }
+
+    fun pieces(f: Frame, c: Map<String, Float>): List<List<IntArray>> {
+        val ideal = c["bs"]!! * f.W / 8 * c["ts"]!!
+        val ty = (c["ty"]!! * f.H).toInt(); val th = (c["th"]!! * f.H).toInt()
+        val rs = ArrayList<Int>(); val gs = ArrayList<Int>(); val bs = ArrayList<Int>()
+        var yy = ty
+        while (yy < ty + th) { var xx = 0; while (xx < f.W) { val p = f.rgb(xx, yy); rs.add((p shr 16) and 255); gs.add((p shr 8) and 255); bs.add(p and 255); xx += 12 }; yy += 12 }
+        rs.sort(); gs.sort(); bs.sort()
+        val br = rs[rs.size / 2]; val bg = gs[gs.size / 2]; val bb = bs[bs.size / 2]   // màu nền khay = trung vị
+        fun fg(p: Int): Boolean {
+            val r = (p shr 16) and 255; val g = (p shr 8) and 255; val b = p and 255
+            val dr = r - br; val dg = g - bg; val db = b - bb
+            return dr * dr + dg * dg + db * db > 48 * 48 && maxOf(r, g, b) > 90
+        }
         return (0 until 3).map { i ->
-            val xa = W * i / 3; val xb = W * (i + 1) / 3
+            val xa = f.W * i / 3; val xb = f.W * (i + 1) / 3
             var minX = Int.MAX_VALUE; var maxX = -1; var minY = Int.MAX_VALUE; var maxY = -1
             var y = ty
             while (y < ty + th) {
                 var x = xa
-                while (x < xb) {
-                    if (bright(px(b, x, y, W, H))) { minX = minOf(minX, x); maxX = maxOf(maxX, x); minY = minOf(minY, y); maxY = maxOf(maxY, y) }
-                    x += 4
-                }
-                y += 4
+                while (x < xb) { if (fg(f.rgb(x, y))) { minX = minOf(minX, x); maxX = maxOf(maxX, x); minY = minOf(minY, y); maxY = maxOf(maxY, y) }; x += 3 }
+                y += 3
             }
             if (maxX < 0) return@map emptyList<IntArray>()
-            val bw = (maxX - minX + 4).toFloat(); val bh = (maxY - minY + 4).toFloat()
+            val bw = (maxX - minX + 3).toFloat(); val bh = (maxY - minY + 3).toFloat()
             var bestS = 0f; var bestD = Float.MAX_VALUE
             for (k in 1..5) {
                 val s = bw / k; val rr = Math.round(bh / s)
                 if (rr < 1 || rr > 5 || Math.abs(bh - rr * s) > s * 0.3f) continue
-                val d = Math.abs(s - ideal)
-                if (d < bestD) { bestD = d; bestS = s }
+                val dd = Math.abs(s - ideal)
+                if (dd < bestD) { bestD = dd; bestS = s }
             }
             if (bestS == 0f) return@map emptyList<IntArray>()
             val cols = Math.round(bw / bestS); val rows = Math.round(bh / bestS)
             val out = ArrayList<IntArray>()
-            for (r in 0 until rows) for (k in 0 until cols)
-                if (bright(px(b, (minX + (k + .5f) * bestS).toInt(), (minY + (r + .5f) * bestS).toInt(), W, H))) out.add(intArrayOf(r, k))
+            for (r in 0 until rows) for (k in 0 until cols) {
+                val cx = minX + (k + .5f) * bestS; val cy = minY + (r + .5f) * bestS
+                var hit = 0
+                for (dy in -1..1) for (dx in -1..1) if (fg(f.rgb((cx + dx * bestS * .2f).toInt(), (cy + dy * bestS * .2f).toInt()))) hit++
+                if (hit >= 5) out.add(intArrayOf(r, k))
+            }
             out
         }
     }
