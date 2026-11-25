@@ -4,8 +4,8 @@ import android.content.Context
 
 object Cfg {
     // bx,bs theo chiều rộng màn hình; by,ty,th theo chiều cao. ts: ô khay/ô bảng. vt: ngưỡng dự phòng. bias: độ nhạy.
-    val DEF = linkedMapOf("bx" to 0.04f, "by" to 0.28f, "bs" to 0.92f, "ty" to 0.74f, "th" to 0.20f,
-        "ts" to 0.60f, "vt" to 0.50f, "bias" to 0.0f)
+    val DEF = linkedMapOf("bx" to 0.056f, "by" to 0.241f, "bs" to 0.889f, "ty" to 0.70f, "th" to 0.12f,
+        "ts" to 0.45f, "vt" to 0.50f, "bias" to 0.0f, "auto" to 1.0f)
     fun load(c: Context): Map<String, Float> { val p = c.getSharedPreferences("cfg", 0); return DEF.mapValues { p.getFloat(it.key, it.value) } }
     fun calibrated(c: Context) = c.getSharedPreferences("cfg", 0).getBoolean("calib", false)
     fun reset(c: Context) = c.getSharedPreferences("cfg", 0).edit().clear().apply()
@@ -19,7 +19,7 @@ class Frame(val buf: ByteArray, val stride: Int, val W: Int, val H: Int) {
     }
 }
 
-class Scan(val board: IntArray, val pieces: List<List<IntArray>>) {
+class Scan(val board: IntArray, val pieces: List<List<IntArray>>, val geo: Map<String, Float>) {
     fun key() = board.joinToString(",") + "|" + pieces.joinToString("/") { p -> p.joinToString(";") { "${it[0]}${it[1]}" } }
 }
 
@@ -47,6 +47,23 @@ object Detector {
             if (vr > bestV) { bestV = vr; bestT = (s[i - 1] + s[i]) / 2 }
         }
         return bestT
+    }
+
+    /** Tự dò vị trí bảng 8×8: các ô trống + khe giữa các ô là màu tối, tạo thành khung vuông. Không được thì dùng căn chỉnh tay. */
+    fun geometry(f: Frame, c: Map<String, Float>): Map<String, Float> {
+        if (c["auto"]!! < 0.5f) return c
+        fun dark(p: Int): Boolean { val r = (p shr 16) and 255; val g = (p shr 8) and 255; val b = p and 255; return maxOf(r, g, b) < 80 && b >= r }
+        val cc = IntArray(f.W / 4 + 1); val rc = IntArray(f.H / 4 + 1)
+        var y = (f.H * 0.10f).toInt(); val ye = (f.H * 0.80f).toInt()
+        while (y < ye) { var x = 0; while (x < f.W) { if (dark(f.rgb(x, y))) { cc[x / 4]++; rc[y / 4]++ }; x += 4 }; y += 4 }
+        val mc = cc.max(); val mr = rc.max()
+        if (mc < 20 || mr < 20) return c
+        val xs = cc.indices.filter { cc[it] >= mc * 0.5f }; val ys = rc.indices.filter { rc[it] >= mr * 0.5f }
+        val left = xs.first() * 4; val right = xs.last() * 4 + 3; val top = ys.first() * 4; val bot = ys.last() * 4 + 3
+        val w = right - left + 1; val h = bot - top + 1
+        if (w < f.W * 0.5f || w > f.W || Math.abs(w - h) > w * 0.05f) return c
+        return c + mapOf("bx" to left.toFloat() / f.W, "by" to top.toFloat() / f.H, "bs" to w.toFloat() / f.W,
+            "ty" to (bot + 0.04f * f.H) / f.H, "th" to 0.20f)
     }
 
     fun board(f: Frame, c: Map<String, Float>): IntArray {

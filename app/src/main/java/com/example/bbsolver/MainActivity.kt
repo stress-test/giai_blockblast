@@ -46,10 +46,15 @@ class MainActivity : Activity() {
 
         root.addView(card(
             text("Cách dùng", 16f, Color.WHITE, true),
-            text("1. Bấm Bắt đầu và cho phép quay màn hình.\n2. Mở game, bấm ⌖ trên thanh nổi, chạm 4 điểm theo hướng dẫn (chỉ làm 1 lần).\n3. Mỗi lượt có 3 mảnh mới, bấm ▶ GIẢI.\n4. App đọc sai? Bấm ✎ để sửa ô rồi giải lại.\n\nChạm “BB” để thu gọn thanh, kéo “BB” để di chuyển.", 13.5f, GRAY).apply { setPadding(0, dp(8), 0, 0); setLineSpacing(dp(3).toFloat(), 1f) }
+            text("1. Bấm Bắt đầu và cho phép quay màn hình.\n2. Mở game, mỗi lượt có 3 mảnh mới thì bấm ▶ GIẢI. App tự dò bảng, đọc 3 mảnh và hiện cả 3 nước đi.\n3. Đọc sai? Bấm ✎ để sửa ô rồi giải lại. Lớp phủ lệch? Bấm ⌖ căn chỉnh tay 4 điểm.\n\nChạm “BB” để thu gọn thanh, kéo “BB” để di chuyển.", 13.5f, GRAY).apply { setPadding(0, dp(8), 0, 0); setLineSpacing(dp(3).toFloat(), 1f) }
         ), LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(16) })
 
         val adv = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
+        adv.addView(Switch(this).apply {
+            text = "Tự động dò vị trí bảng"; setTextColor(Color.WHITE)
+            isChecked = getSharedPreferences("cfg", 0).getFloat("auto", 1f) >= 0.5f
+            setOnCheckedChangeListener { _, on -> getSharedPreferences("cfg", 0).edit().putFloat("auto", if (on) 1f else 0f).apply(); onResume() }
+        })
         slider(adv, "bias", "Độ nhạy nhận khối (↑ khó nhận hơn)", -0.2f, 0.2f)
         slider(adv, "vt", "Ngưỡng dự phòng khi bảng trống/đầy", 0.2f, 0.8f)
         slider(adv, "ts", "Tỉ lệ ô khay / ô bảng", 0.4f, 0.95f)
@@ -68,7 +73,7 @@ class MainActivity : Activity() {
         val ov = Settings.canDrawOverlays(this)
         status.text = (if (ov) "✓" else "✗") + "  Quyền hiển thị trên ứng dụng khác\n" +
             (if (running()) "✓" else "○") + "  Dịch vụ quét " + (if (running()) "đang chạy" else "chưa chạy") + "\n" +
-            (if (Cfg.calibrated(this)) "✓" else "○") + "  Căn chỉnh bảng"
+            "✓  Vị trí bảng: " + (if (getSharedPreferences("cfg", 0).getFloat("auto", 1f) >= 0.5f) "tự động dò" else "căn chỉnh tay")
         go.text = if (running()) "Dừng dịch vụ" else "Bắt đầu"
         go.background = round(if (running()) 0xFF3A3A46.toInt() else ORANGE, 14)
     }

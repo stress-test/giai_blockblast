@@ -70,7 +70,7 @@ class CaptureService : Service() {
         overlay = OverlayView(this).also { wm.addView(it, fullLp(false)) }
         buildBar()
         getSharedPreferences("cfg", 0).edit().putBoolean("running", true).apply()
-        toast(if (Cfg.calibrated(this)) "Sẵn sàng · mở game và bấm GIẢI" else "Lần đầu: bấm ⌖ để căn chỉnh bảng")
+        toast("Sẵn sàng · mở game và bấm GIẢI")
         return START_NOT_STICKY
     }
 
@@ -124,7 +124,8 @@ class CaptureService : Service() {
         repeat(3) {
             val f = grabFrame()
             if (f != null) {
-                val cur = Scan(Detector.board(f, cfg), Detector.pieces(f, cfg))
+                val g = Detector.geometry(f, cfg)
+                val cur = Scan(Detector.board(f, g), Detector.pieces(f, g), g)
                 if (prev != null && prev!!.key() == cur.key()) return cur
                 prev = cur
             }
@@ -153,7 +154,9 @@ class CaptureService : Service() {
         h.post {
             lastScan = sc
             overlay?.let { ov ->
-                ov.cfg = cfg; ov.moves = sol?.moves; ov.detected = sc.board
+                ov.cfg = sc.geo; ov.moves = sol?.moves; ov.detected = sc.board
+                ov.lines = sol?.moves?.mapIndexed { i, m -> "${i + 1}. Mảnh ${m.pi + 1} → hàng ${m.r + 1}, cột ${m.c + 1}" + (if (m.lines > 0) " · xóa ${m.lines}" else "") } ?: emptyList()
+                ov.pieceIds = sol?.moves?.map { it.pi } ?: emptyList()
                 when {
                     sol == null -> { ov.title = "Không có nước đi"; ov.sub = "Chưa đọc được mảnh · bấm ✎ để sửa hoặc ⌖ căn chỉnh" }
                     !sol.complete -> { ov.title = "Chỉ đặt được ${sol.moves.size}/${sol.total} mảnh"; ov.sub = "Sắp hết chỗ · đây là nước kéo dài nhất" }
@@ -172,7 +175,7 @@ class CaptureService : Service() {
         overlay?.visibility = View.INVISIBLE; bar?.visibility = View.GONE
         val v = EditorView(this, s.board, s.pieces, { rows, ps ->
             h.post { closeEditor(); busy.set(true); goBtn.text = "…"; val cfg = Cfg.load(this)
-                worker.execute { try { solveAndShow(Scan(rows, ps), cfg) } catch (e: Throwable) { h.post { toast("Lỗi: ${e.message}"); idle() } } } }
+                worker.execute { try { solveAndShow(Scan(rows, ps, s.geo), cfg) } catch (e: Throwable) { h.post { toast("Lỗi: ${e.message}"); idle() } } } }
         }, { h.post { closeEditor(); idle() } })
         editor = v; wm.addView(v, fullLp(true))
     }
@@ -189,8 +192,8 @@ class CaptureService : Service() {
                 if (b.x <= a.x || b.y <= a.y || d.y <= c.y) toast("Căn chỉnh sai thứ tự, thử lại")
                 else {
                     getSharedPreferences("cfg", 0).edit().putFloat("bx", a.x / W).putFloat("by", a.y / H).putFloat("bs", (b.x - a.x) / W)
-                        .putFloat("ty", c.y / H).putFloat("th", (d.y - c.y) / H).putBoolean("calib", true).apply()
-                    toast("Đã lưu căn chỉnh ✓")
+                        .putFloat("auto", 0f).putFloat("ty", c.y / H).putFloat("th", (d.y - c.y) / H).putBoolean("calib", true).apply()
+                    toast("Đã lưu căn chỉnh tay ✓ (tắt tự dò bảng)")
                 }
             }
         }
