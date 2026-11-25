@@ -102,14 +102,19 @@ class CaptureService : Service() {
             }
         })
         b.addView(handle); b.addView(row)
-        barLp.gravity = Gravity.TOP or Gravity.START; barLp.x = 16; barLp.y = H / 2
+        barLp.gravity = Gravity.TOP or Gravity.START
+        barLp.x = 16
+        // Đặt thanh điều khiển vào khoảng trống dưới bảng, tránh che nước đi trên bàn.
+        val cfg = Cfg.load(this)
+        val boardBottom = (cfg["by"]!! * H + cfg["bs"]!! * W).toInt()
+        barLp.y = (boardBottom + 8).coerceAtMost((H * 0.68f).toInt())
         bar = b; btns = row; wm.addView(b, barLp)
     }
 
     private fun idle() { busy.set(false); goBtn.text = "▶ GIẢI"; overlay?.visibility = View.VISIBLE; bar?.visibility = View.VISIBLE }
 
     private fun grabFrame(): Frame? {
-        val img = reader?.acquireLatestImage() ?: return lastFrame
+        val img = reader?.acquireLatestImage() ?: return null
         try {
             val pl = img.planes[0]; val stride = pl.rowStride; val bb = pl.buffer
             val arr = ByteArray(stride * H); bb.get(arr, 0, minOf(bb.remaining(), arr.size))
@@ -117,21 +122,24 @@ class CaptureService : Service() {
         } finally { img.close() }
     }
 
-    /** Quét tối đa 3 lần, dừng khi hai lần liên tiếp cho cùng kết quả (tránh hoạt ảnh / hiệu ứng xóa hàng). */
+    /** Lấy khung hình mới và chờ hai lần quét liên tiếp ổn định để tránh animation. **/
     private fun capture(cfg: Map<String, Float>): Scan? {
-        Thread.sleep(170)   // chờ lớp phủ biến mất khỏi khung hình
+        // Đợi khung hình MỚI sau khi ẩn lớp phủ; không dùng ảnh cũ có thể chứa overlay.
+        Thread.sleep(280)
         var prev: Scan? = null
-        repeat(3) {
+        var freshCount = 0
+        repeat(8) {
             val f = grabFrame()
             if (f != null) {
+                freshCount++
                 val g = Detector.geometry(f, cfg)
                 val cur = Scan(Detector.board(f, g), Detector.pieces(f, g), g)
                 if (prev != null && prev!!.key() == cur.key()) return cur
                 prev = cur
             }
-            Thread.sleep(130)
+            Thread.sleep(90)
         }
-        return prev
+        return if (freshCount > 0) prev else null
     }
 
     private fun scan() {

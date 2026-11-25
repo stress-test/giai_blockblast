@@ -14,7 +14,7 @@ class CalibView(ctx: Context, private val onDone: (List<PointF>) -> Unit) : View
 
     override fun onTouchEvent(e: MotionEvent): Boolean {
         if (e.action == MotionEvent.ACTION_UP && pts.size < 4) {
-            pts.add(PointF(e.rawX, e.rawY)); invalidate()
+            pts.add(PointF(e.x, e.y)); invalidate()
             if (pts.size == 4) onDone(pts)
         }
         return true
